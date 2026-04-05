@@ -1,8 +1,289 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as api from "../api.js";
 import { useAuth } from "../AuthContext.jsx";
 
 const FILE_ACCEPT = ".pdf,.jpg,.jpeg,.png,.bmp,application/pdf,image/jpeg,image/png,image/bmp";
+
+/**
+ * Page buttons: for totalPages ≤ 10 show all; otherwise up to 10 numbers as
+ * “first 5” + “last 5” (with the first group sliding around current when
+ * using Next/Previous in the middle).
+ */
+function getCustomerListPageNumbers(page, totalPages) {
+  if (totalPages <= 1) return [1];
+  if (totalPages <= 10) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+
+  const last5 = [];
+  for (let p = totalPages - 4; p <= totalPages; p++) {
+    last5.push(p);
+  }
+
+  let first5;
+  if (page <= 5) {
+    first5 = [1, 2, 3, 4, 5];
+  } else if (page >= totalPages - 4) {
+    first5 = [1, 2, 3, 4, 5];
+  } else {
+    first5 = [page - 2, page - 1, page, page + 1, page + 2];
+  }
+
+  const merged = [...new Set([...first5, ...last5])]
+    .filter((p) => p >= 1 && p <= totalPages)
+    .sort((a, b) => a - b);
+
+  /** @type {(number | null)[]} */
+  const out = [];
+  for (let i = 0; i < merged.length; i++) {
+    if (i > 0 && merged[i] - merged[i - 1] > 1) out.push(null);
+    out.push(merged[i]);
+  }
+  return out;
+}
+
+function CustomerListPaginationControls({ page, totalPages, onPageChange }) {
+  const nums = getCustomerListPageNumbers(page, totalPages);
+  return (
+    <div className="customer-list-pagination-bar">
+      <button
+        type="button"
+        className="btn btn-ghost"
+        disabled={page <= 1}
+        onClick={() => onPageChange(Math.max(1, page - 1))}
+      >
+        Previous
+      </button>
+      <nav className="customer-list-page-links" aria-label="Pages">
+        {nums.map((n, i) =>
+          n == null ? (
+            <span key={`ellipsis-${i}`} className="customer-list-page-ellipsis">
+              …
+            </span>
+          ) : (
+            <button
+              key={n}
+              type="button"
+              className={
+                "customer-list-page-link" + (n === page ? " customer-list-page-link--active" : "")
+              }
+              onClick={() => onPageChange(n)}
+              aria-label={`Page ${n}`}
+              aria-current={n === page ? "page" : undefined}
+            >
+              {n}
+            </button>
+          )
+        )}
+      </nav>
+      <button
+        type="button"
+        className="btn btn-ghost"
+        disabled={page >= totalPages}
+        onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+      >
+        Next
+      </button>
+    </div>
+  );
+}
+
+/** Live capture from webcam; supports choosing device when multiple cameras exist. */
+function CustomerPhotoCapture({
+  photoFile,
+  onPhotoChange,
+  serverHasPhoto,
+}) {
+  const videoRef = useRef(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [devices, setDevices] = useState([]);
+  const [deviceIndex, setDeviceIndex] = useState(0);
+  const [cameraErr, setCameraErr] = useState("");
+
+  const previewUrl = useMemo(() => {
+    if (!photoFile) return null;
+    return URL.createObjectURL(photoFile);
+  }, [photoFile]);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
+  useEffect(() => {
+    if (!cameraOpen) return;
+    let stream;
+    let cancelled = false;
+    (async () => {
+      try {
+        const dev = devices[deviceIndex];
+        const constraints =
+          dev?.deviceId && dev.deviceId !== ""
+            ? { video: { deviceId: { exact: dev.deviceId } } }
+            : { video: true };
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setCameraErr(e.message || "Could not open the selected camera.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop());
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+    };
+  }, [cameraOpen, devices, deviceIndex]);
+
+  async function startCamera() {
+    setCameraErr("");
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setCameraErr(
+          "Camera is not available (try HTTPS or http://localhost)."
+        );
+        return;
+      }
+      const tmp = await navigator.mediaDevices.getUserMedia({ video: true });
+      tmp.getTracks().forEach((t) => t.stop());
+      const list = (await navigator.mediaDevices.enumerateDevices()).filter(
+        (d) => d.kind === "videoinput"
+      );
+      if (!list.length) {
+        setCameraErr("No camera was detected.");
+        return;
+      }
+      setDevices(list);
+      setDeviceIndex(0);
+      setCameraOpen(true);
+    } catch (e) {
+      setCameraErr(
+        e.name === "NotAllowedError"
+          ? "Camera permission was denied."
+          : e.message || "Could not access the camera."
+      );
+    }
+  }
+
+  function stopCamera() {
+    setCameraOpen(false);
+    setDevices([]);
+    setDeviceIndex(0);
+    setCameraErr("");
+  }
+
+  function captureFrame() {
+    const v = videoRef.current;
+    if (!v?.videoWidth) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = v.videoWidth;
+    canvas.height = v.videoHeight;
+    canvas.getContext("2d").drawImage(v, 0, 0);
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) return;
+        onPhotoChange(
+          new File([blob], "customer-photo.jpg", { type: "image/jpeg" })
+        );
+        stopCamera();
+      },
+      "image/jpeg",
+      0.92
+    );
+  }
+
+  return (
+    <div className="customer-photo-capture">
+      <label>Customer photo (optional)</label>
+      <p className="customer-photo-hint">
+        Stored as a file on the server (path in database only). Use a camera
+        below; if you have more than one, pick which camera to use.
+      </p>
+      {serverHasPhoto && !photoFile ? (
+        <p className="customer-photo-server-note">
+          A photo is already saved for this customer. Capture again to replace it
+          on save.
+        </p>
+      ) : null}
+      {previewUrl ? (
+        <div className="customer-photo-preview-row">
+          <img
+            src={previewUrl}
+            alt="Captured customer"
+            className="customer-photo-thumb"
+          />
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => onPhotoChange(null)}
+          >
+            Remove photo
+          </button>
+        </div>
+      ) : null}
+
+      {cameraErr ? <p className="error" style={{ margin: "0.35rem 0 0" }}>{cameraErr}</p> : null}
+
+      {!cameraOpen ? (
+        <button type="button" className="btn btn-ghost" onClick={startCamera}>
+          Take photo with camera
+        </button>
+      ) : (
+        <div className="customer-camera-live">
+          {devices.length > 1 ? (
+            <div className="field" style={{ marginBottom: "0.5rem" }}>
+              <label>Camera</label>
+              <select
+                value={String(deviceIndex)}
+                onChange={(e) => setDeviceIndex(Number(e.target.value))}
+                className="customer-camera-select"
+              >
+                {devices.map((d, i) => (
+                  <option key={`${d.deviceId}-${i}`} value={String(i)}>
+                    {d.label || `Camera ${i + 1}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+          <video
+            ref={videoRef}
+            className="customer-camera-video"
+            autoPlay
+            playsInline
+            muted
+          />
+          <div className="customer-camera-actions">
+            <button type="button" className="btn btn-primary" onClick={captureFrame}>
+              Capture
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={stopCamera}>
+              Close camera
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function emptyForm() {
   return {
@@ -75,6 +356,8 @@ export default function Customers() {
   const [addressProof, setAddressProof] = useState(null);
   const [panProof, setPanProof] = useState(null);
   const [aadharProof, setAadharProof] = useState(null);
+  const [customerPhoto, setCustomerPhoto] = useState(null);
+  const [editingHasServerPhoto, setEditingHasServerPhoto] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [refQuery, setRefQuery] = useState("");
   const [refOptions, setRefOptions] = useState([]);
@@ -85,6 +368,14 @@ export default function Customers() {
     emptyDetailSearch()
   );
   const [appliedDetailSearch, setAppliedDetailSearch] = useState(null);
+  const [listPage, setListPage] = useState(1);
+  const [listMeta, setListMeta] = useState({
+    total: 0,
+    page: 1,
+    pageSize: 10,
+    totalPages: 1,
+  });
+  const lastListFilterKey = useRef(null);
   const refBlurTimer = useRef(null);
 
   const clearRefBlurTimer = useCallback(() => {
@@ -112,18 +403,32 @@ export default function Customers() {
     }
   }, [token]);
 
-  const loadList = useCallback(async () => {
+  const listFilterKey = useMemo(
+    () =>
+      `${debouncedQ}\n${JSON.stringify(appliedDetailSearch ?? null)}`,
+    [debouncedQ, appliedDetailSearch]
+  );
+
+  const refreshList = useCallback(async () => {
     setErr("");
     try {
       const opts = {
         q: debouncedQ || undefined,
         ...(appliedDetailSearch || {}),
+        page: listPage,
       };
-      setList(await api.fetchCustomers(token, opts));
+      const data = await api.fetchCustomers(token, opts);
+      setList(data.items ?? []);
+      setListMeta({
+        total: data.total ?? 0,
+        page: data.page ?? 1,
+        pageSize: data.pageSize ?? 10,
+        totalPages: data.totalPages ?? 1,
+      });
     } catch (e) {
       setErr(e.message);
     }
-  }, [token, debouncedQ, appliedDetailSearch]);
+  }, [token, debouncedQ, appliedDetailSearch, listPage]);
 
   useEffect(() => {
     loadPlaces();
@@ -135,8 +440,40 @@ export default function Customers() {
   }, [searchQ]);
 
   useEffect(() => {
-    loadList();
-  }, [loadList]);
+    let cancelled = false;
+    const filtersChanged = lastListFilterKey.current !== listFilterKey;
+    if (filtersChanged) {
+      lastListFilterKey.current = listFilterKey;
+      if (listPage !== 1) {
+        setListPage(1);
+        return;
+      }
+    }
+    (async () => {
+      setErr("");
+      try {
+        const opts = {
+          q: debouncedQ || undefined,
+          ...(appliedDetailSearch || {}),
+          page: listPage,
+        };
+        const data = await api.fetchCustomers(token, opts);
+        if (cancelled) return;
+        setList(data.items ?? []);
+        setListMeta({
+          total: data.total ?? 0,
+          page: data.page ?? 1,
+          pageSize: data.pageSize ?? 10,
+          totalPages: data.totalPages ?? 1,
+        });
+      } catch (e) {
+        if (!cancelled) setErr(e.message);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, listFilterKey, listPage, debouncedQ, appliedDetailSearch]);
 
   useEffect(() => {
     const t = setTimeout(async () => {
@@ -159,6 +496,8 @@ export default function Customers() {
     setAddressProof(null);
     setPanProof(null);
     setAadharProof(null);
+    setCustomerPhoto(null);
+    setEditingHasServerPhoto(false);
     setEditingId(null);
     setRefQuery("");
     setShowRefList(false);
@@ -168,6 +507,7 @@ export default function Customers() {
   function startEdit(row) {
     clearRefBlurTimer();
     setEditingId(row.id);
+    setEditingHasServerPhoto(!!row.hasCustomerPhoto);
     setForm({
       name: row.name,
       fatherName: row.fatherName,
@@ -187,6 +527,7 @@ export default function Customers() {
     setAddressProof(null);
     setPanProof(null);
     setAadharProof(null);
+    setCustomerPhoto(null);
     setFileKey((k) => k + 1);
     setRefQuery(
       row.referrerName && row.referredByCustomerId
@@ -209,9 +550,10 @@ export default function Customers() {
       if (addressProof) fd.append("addressProof", addressProof);
       if (panProof) fd.append("panProof", panProof);
       if (aadharProof) fd.append("aadharProof", aadharProof);
+      if (customerPhoto) fd.append("customerPhoto", customerPhoto);
       await api.createCustomer(token, fd);
       resetCreateForm();
-      await loadList();
+      await refreshList();
     } catch (e) {
       setErr(e.message);
     }
@@ -231,9 +573,10 @@ export default function Customers() {
       if (addressProof) fd.append("addressProof", addressProof);
       if (panProof) fd.append("panProof", panProof);
       if (aadharProof) fd.append("aadharProof", aadharProof);
+      if (customerPhoto) fd.append("customerPhoto", customerPhoto);
       await api.updateCustomer(token, editingId, fd);
       resetCreateForm();
-      await loadList();
+      await refreshList();
     } catch (e) {
       setErr(e.message);
     }
@@ -245,7 +588,7 @@ export default function Customers() {
     try {
       await api.deleteCustomer(token, id);
       if (editingId === id) resetCreateForm();
-      await loadList();
+      await refreshList();
     } catch (e) {
       setErr(e.message);
     }
@@ -270,167 +613,178 @@ export default function Customers() {
     <div>
       <div className="card card--customer-form" style={{ marginBottom: "1rem" }}>
         <h2>Customers</h2>
-        <p style={{ color: "var(--muted)", marginTop: 0, fontSize: "0.85rem", marginBottom: "0.5rem" }}>
-          Quick search matches any field. Use “Detail search” for filters by column. Proofs: PDF, JPG, JPEG, PNG, BMP (max ~8MB).
-        </p>
-        <div className="field" style={{ marginBottom: "0.35rem" }}>
-          <label>Search all fields</label>
-          <input
-            value={searchQ}
-            onChange={(e) => setSearchQ(e.target.value)}
-            placeholder="Type to filter the list…"
-            style={{ maxWidth: "28rem" }}
-          />
-        </div>
-        <div className="detail-search-toolbar">
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => setShowDetailSearch((v) => !v)}
-          >
-            {showDetailSearch ? "Hide detail search" : "Detail search"}
-          </button>
-          {appliedDetailSearch ? (
-            <span className="detail-search-badge">Detail filters active</span>
-          ) : null}
-        </div>
-        {showDetailSearch ? (
-          <form
-            className="detail-search-panel"
-            onSubmit={(e) => {
-              e.preventDefault();
-              setAppliedDetailSearch(buildDetailSearchPayload(detailSearchForm));
-            }}
-          >
-            <div className="detail-search-grid">
-              <div className="field">
-                <label>Name</label>
-                <input
-                  value={detailSearchForm.name}
-                  onChange={(e) =>
-                    setDetailSearchForm({
-                      ...detailSearchForm,
-                      name: e.target.value,
-                    })
-                  }
-                  placeholder="Contains…"
-                />
-              </div>
-              <div className="field">
-                <label>Father name</label>
-                <input
-                  value={detailSearchForm.fatherName}
-                  onChange={(e) =>
-                    setDetailSearchForm({
-                      ...detailSearchForm,
-                      fatherName: e.target.value,
-                    })
-                  }
-                  placeholder="Contains…"
-                />
-              </div>
-              <div className="field">
-                <label>Address</label>
-                <input
-                  value={detailSearchForm.address}
-                  onChange={(e) =>
-                    setDetailSearchForm({
-                      ...detailSearchForm,
-                      address: e.target.value,
-                    })
-                  }
-                  placeholder="Contains…"
-                />
-              </div>
-              <div className="field">
-                <label>Mobile</label>
-                <input
-                  value={detailSearchForm.mobile}
-                  onChange={(e) =>
-                    setDetailSearchForm({
-                      ...detailSearchForm,
-                      mobile: e.target.value,
-                    })
-                  }
-                  placeholder="mobile1 or mobile2"
-                />
-              </div>
-              <div className="field">
-                <label>Place</label>
-                <select
-                  value={detailSearchForm.placeId}
-                  onChange={(e) =>
-                    setDetailSearchForm({
-                      ...detailSearchForm,
-                      placeId: e.target.value,
-                    })
-                  }
-                >
-                  <option value="">Any place</option>
-                  {places.map((p) => (
-                    <option key={p.id} value={String(p.id)}>
-                      {p.initial} — {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="field">
-                <label>PAN</label>
-                <input
-                  value={detailSearchForm.pan}
-                  onChange={(e) =>
-                    setDetailSearchForm({
-                      ...detailSearchForm,
-                      pan: e.target.value,
-                    })
-                  }
-                  placeholder="Contains…"
-                />
-              </div>
-              <div className="field">
-                <label>Aadhar</label>
-                <input
-                  value={detailSearchForm.aadhar}
-                  onChange={(e) =>
-                    setDetailSearchForm({
-                      ...detailSearchForm,
-                      aadhar: e.target.value,
-                    })
-                  }
-                  placeholder="Contains…"
-                />
-              </div>
-              <div className="field">
-                <label>PIN code</label>
-                <input
-                  value={detailSearchForm.pinCode}
-                  onChange={(e) =>
-                    setDetailSearchForm({
-                      ...detailSearchForm,
-                      pinCode: e.target.value,
-                    })
-                  }
-                  placeholder="Contains…"
-                />
-              </div>
+        <div className="customers-search-layout">
+          <div className="customers-search-main">
+            <p style={{ color: "var(--muted)", marginTop: 0, fontSize: "0.85rem", marginBottom: "0.5rem" }}>
+              Quick search matches any field. Use “Detail search” for filters by column. Proofs: PDF, JPG, JPEG, PNG, BMP (max ~8MB).
+            </p>
+            <div className="field" style={{ marginBottom: "0.35rem" }}>
+              <label>Search all fields</label>
+              <input
+                value={searchQ}
+                onChange={(e) => setSearchQ(e.target.value)}
+                placeholder="Type to filter the list…"
+                style={{ maxWidth: "28rem" }}
+              />
             </div>
-            <div className="detail-search-actions">
-              <button type="submit" className="btn btn-primary">
-                Search
-              </button>
+            <div className="detail-search-toolbar">
               <button
                 type="button"
                 className="btn btn-ghost"
-                onClick={() => {
-                  setDetailSearchForm(emptyDetailSearch());
-                  setAppliedDetailSearch(null);
+                onClick={() => setShowDetailSearch((v) => !v)}
+              >
+                {showDetailSearch ? "Hide detail search" : "Detail search"}
+              </button>
+              {appliedDetailSearch ? (
+                <span className="detail-search-badge">Detail filters active</span>
+              ) : null}
+            </div>
+            {showDetailSearch ? (
+              <form
+                className="detail-search-panel"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setAppliedDetailSearch(buildDetailSearchPayload(detailSearchForm));
                 }}
               >
-                Clear detail filters
-              </button>
-            </div>
-          </form>
-        ) : null}
+                <div className="detail-search-grid">
+                  <div className="field">
+                    <label>Name</label>
+                    <input
+                      value={detailSearchForm.name}
+                      onChange={(e) =>
+                        setDetailSearchForm({
+                          ...detailSearchForm,
+                          name: e.target.value,
+                        })
+                      }
+                      placeholder="Contains…"
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Father name</label>
+                    <input
+                      value={detailSearchForm.fatherName}
+                      onChange={(e) =>
+                        setDetailSearchForm({
+                          ...detailSearchForm,
+                          fatherName: e.target.value,
+                        })
+                      }
+                      placeholder="Contains…"
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Address</label>
+                    <input
+                      value={detailSearchForm.address}
+                      onChange={(e) =>
+                        setDetailSearchForm({
+                          ...detailSearchForm,
+                          address: e.target.value,
+                        })
+                      }
+                      placeholder="Contains…"
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Mobile</label>
+                    <input
+                      value={detailSearchForm.mobile}
+                      onChange={(e) =>
+                        setDetailSearchForm({
+                          ...detailSearchForm,
+                          mobile: e.target.value,
+                        })
+                      }
+                      placeholder="mobile1 or mobile2"
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Place</label>
+                    <select
+                      value={detailSearchForm.placeId}
+                      onChange={(e) =>
+                        setDetailSearchForm({
+                          ...detailSearchForm,
+                          placeId: e.target.value,
+                        })
+                      }
+                    >
+                      <option value="">Any place</option>
+                      {places.map((p) => (
+                        <option key={p.id} value={String(p.id)}>
+                          {p.initial} — {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>PAN</label>
+                    <input
+                      value={detailSearchForm.pan}
+                      onChange={(e) =>
+                        setDetailSearchForm({
+                          ...detailSearchForm,
+                          pan: e.target.value,
+                        })
+                      }
+                      placeholder="Contains…"
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Aadhar</label>
+                    <input
+                      value={detailSearchForm.aadhar}
+                      onChange={(e) =>
+                        setDetailSearchForm({
+                          ...detailSearchForm,
+                          aadhar: e.target.value,
+                        })
+                      }
+                      placeholder="Contains…"
+                    />
+                  </div>
+                  <div className="field">
+                    <label>PIN code</label>
+                    <input
+                      value={detailSearchForm.pinCode}
+                      onChange={(e) =>
+                        setDetailSearchForm({
+                          ...detailSearchForm,
+                          pinCode: e.target.value,
+                        })
+                      }
+                      placeholder="Contains…"
+                    />
+                  </div>
+                </div>
+                <div className="detail-search-actions">
+                  <button type="submit" className="btn btn-primary">
+                    Search
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      setDetailSearchForm(emptyDetailSearch());
+                      setAppliedDetailSearch(null);
+                    }}
+                  >
+                    Clear detail filters
+                  </button>
+                </div>
+              </form>
+            ) : null}
+          </div>
+          <aside className="customers-photo-aside">
+            <CustomerPhotoCapture
+              photoFile={customerPhoto}
+              onPhotoChange={setCustomerPhoto}
+              serverHasPhoto={!!editingId && editingHasServerPhoto}
+            />
+          </aside>
+        </div>
       </div>
 
       <div className="card card--customer-form" style={{ marginBottom: "1.5rem" }}>
@@ -444,6 +798,14 @@ export default function Customers() {
                 <input
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="field">
+                <label>Father name</label>
+                <input
+                  value={form.fatherName}
+                  onChange={(e) => setForm({ ...form, fatherName: e.target.value })}
                   required
                 />
               </div>
@@ -476,14 +838,6 @@ export default function Customers() {
             </div>
 
             <div className="customer-form-col">
-              <div className="field">
-                <label>Father name</label>
-                <input
-                  value={form.fatherName}
-                  onChange={(e) => setForm({ ...form, fatherName: e.target.value })}
-                  required
-                />
-              </div>
               <div className="field">
                 <label>Place</label>
                 <select
@@ -679,7 +1033,34 @@ export default function Customers() {
       </div>
 
       <div className="card">
-        <h2>Customer list ({list.length})</h2>
+        <h2>
+          Customer list
+          {listMeta.total > 0
+            ? ` (${listMeta.total} total)`
+            : list.length === 0
+              ? " (0)"
+              : ""}
+        </h2>
+        {listMeta.total > 0 ? (
+          <p className="customer-list-pagination-summary">
+            Page {listMeta.page} of {listMeta.totalPages}
+            {" · "}
+            Showing{" "}
+            {(listMeta.page - 1) * listMeta.pageSize + 1}
+            –
+            {Math.min(listMeta.page * listMeta.pageSize, listMeta.total)} of{" "}
+            {listMeta.total}
+            {" · "}
+            {listMeta.pageSize} per page (set in Configuration)
+          </p>
+        ) : null}
+        {listMeta.totalPages > 1 ? (
+          <CustomerListPaginationControls
+            page={listMeta.page}
+            totalPages={listMeta.totalPages}
+            onPageChange={setListPage}
+          />
+        ) : null}
         <div className="table-wrap">
           <table>
             <thead>
@@ -742,9 +1123,20 @@ export default function Customers() {
                           Aadhar
                         </button>
                       ) : null}
+                      {row.hasCustomerPhoto ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          style={{ fontSize: "0.75rem" }}
+                          onClick={() => onDownloadProof(row.id, "customerPhoto")}
+                        >
+                          Photo
+                        </button>
+                      ) : null}
                       {!row.hasAddressProof &&
                       !row.hasPanProof &&
-                      !row.hasAadharProof
+                      !row.hasAadharProof &&
+                      !row.hasCustomerPhoto
                         ? "—"
                         : null}
                     </div>
@@ -772,6 +1164,15 @@ export default function Customers() {
             </tbody>
           </table>
         </div>
+        {listMeta.totalPages > 1 ? (
+          <div className="customer-list-pagination-bar--footer-wrap">
+            <CustomerListPaginationControls
+              page={listMeta.page}
+              totalPages={listMeta.totalPages}
+              onPageChange={setListPage}
+            />
+          </div>
+        ) : null}
       </div>
     </div>
   );

@@ -2,7 +2,8 @@ import express from "express";
 import cors from "cors";
 import fs from "fs/promises";
 import path from "path";
-import { config } from "./config.js";import { ensureDatabaseExists } from "./db/ensureDatabase.js";
+import { config } from "./config.js";
+import { ensureDatabaseExists } from "./db/ensureDatabase.js";
 import { pool } from "./db/pool.js";
 import { initSchema } from "./db/initSchema.js";
 import { authRouter } from "./routes/auth.js";
@@ -11,6 +12,8 @@ import { jewelTypesRouter } from "./routes/jewelTypes.js";
 import { placesRouter } from "./routes/places.js";
 import { boardRateRouter } from "./routes/boardRate.js";
 import { customersRouter } from "./routes/customers.js";
+import { settingsRouter } from "./routes/settings.js";
+import { jewelLoansRouter } from "./routes/jewelLoans.js";
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
@@ -31,6 +34,8 @@ app.use("/api/jewel-types", jewelTypesRouter);
 app.use("/api/places", placesRouter);
 app.use("/api/board-rate", boardRateRouter);
 app.use("/api/customers", customersRouter);
+app.use("/api/settings", settingsRouter);
+app.use("/api/jewel-loans", jewelLoansRouter);
 
 app.use((err, _req, res, _next) => {
   console.error(err);

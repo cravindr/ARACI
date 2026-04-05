@@ -23,6 +23,12 @@ export default function Layout() {
         >
           Customers
         </NavLink>
+        <NavLink
+          to="/jewel-loan"
+          className={({ isActive }) => "nav-link" + (isActive ? " active" : "")}
+        >
+          Jewel loan
+        </NavLink>
         {isAdmin && (
           <>
             <NavLink
@@ -42,6 +48,12 @@ export default function Layout() {
               className={({ isActive }) => "nav-link" + (isActive ? " active" : "")}
             >
               Places
+            </NavLink>
+            <NavLink
+              to="/configuration"
+              className={({ isActive }) => "nav-link" + (isActive ? " active" : "")}
+            >
+              Configuration
             </NavLink>
           </>
         )}

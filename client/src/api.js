@@ -173,6 +173,7 @@ export async function fetchCustomers(token, opts = {}) {
   const p = new URLSearchParams();
   if (typeof opts === "string") {
     if (opts) p.set("q", opts);
+    p.set("page", "1");
   } else {
     if (opts.q) p.set("q", opts.q);
     if (opts.name) p.set("name", opts.name);
@@ -183,11 +184,84 @@ export async function fetchCustomers(token, opts = {}) {
     if (opts.pan) p.set("pan", opts.pan);
     if (opts.aadhar) p.set("aadhar", opts.aadhar);
     if (opts.pinCode) p.set("pinCode", opts.pinCode);
+    if (opts.page != null) p.set("page", String(opts.page));
+    else p.set("page", "1");
   }
   const qs = p.toString();
-  const res = await fetch(`${base}/customers${qs ? `?${qs}` : ""}`, {
+  const res = await fetch(`${base}/customers?${qs}`, {
     headers: authHeaders(token),
   });
+  return handle(res);
+}
+
+export async function fetchAppSettings(token) {
+  const res = await fetch(`${base}/settings`, {
+    headers: authHeaders(token),
+  });
+  return handle(res);
+}
+
+export async function updateAppSettings(token, body) {
+  const res = await fetch(`${base}/settings`, {
+    method: "PUT",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  return handle(res);
+}
+
+export async function fetchCustomersPicker(token, opts = {}) {
+  const p = new URLSearchParams();
+  if (opts.q) p.set("q", opts.q);
+  if (opts.name) p.set("name", opts.name);
+  if (opts.fatherName) p.set("fatherName", opts.fatherName);
+  if (opts.address) p.set("address", opts.address);
+  if (opts.mobile) p.set("mobile", opts.mobile);
+  if (opts.placeId) p.set("placeId", String(opts.placeId));
+  if (opts.pan) p.set("pan", opts.pan);
+  if (opts.aadhar) p.set("aadhar", opts.aadhar);
+  if (opts.pinCode) p.set("pinCode", opts.pinCode);
+  const qs = p.toString();
+  const res = await fetch(
+    `${base}/customers/picker${qs ? `?${qs}` : ""}`,
+    { headers: authHeaders(token) }
+  );
+  return handle(res);
+}
+
+export async function fetchJewelLoansForCustomer(token, customerId) {
+  const res = await fetch(
+    `${base}/jewel-loans?customerId=${encodeURIComponent(String(customerId))}`,
+    { headers: authHeaders(token) }
+  );
+  return handle(res);
+}
+
+export async function createJewelLoan(token, body) {
+  const res = await fetch(`${base}/jewel-loans`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  return handle(res);
+}
+
+export async function updateJewelLoan(token, id, body) {
+  const res = await fetch(`${base}/jewel-loans/${encodeURIComponent(String(id))}`, {
+    method: "PUT",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  return handle(res);
+}
+
+export async function deleteJewelLoan(token, id, password) {
+  const res = await fetch(`${base}/jewel-loans/${encodeURIComponent(String(id))}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+    body: JSON.stringify({ password }),
+  });
+  if (res.status === 204) return null;
   return handle(res);
 }
 

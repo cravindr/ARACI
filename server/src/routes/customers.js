@@ -5,6 +5,7 @@ import { pool } from "../db/pool.js";
 import { config } from "../config.js";
 import { authRequired } from "../middleware/auth.js";
 import { uploadCustomerFiles } from "../middleware/customerUpload.js";
+import { getCustomerListPageSize } from "../appSettings.js";
 
 export const customersRouter = Router();
 
@@ -47,7 +48,7 @@ function escapeLike(s) {
   return String(s).replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
-function buildSearch(q) {
+function buildSearchOnFields(q, fields) {
   const raw = String(q || "").trim();
   if (!raw) return { sql: "", params: [] };
   const words = raw.split(/\s+/).filter(Boolean);
@@ -56,13 +57,34 @@ function buildSearch(q) {
   const params = [];
   for (const word of words) {
     const like = `%${escapeLike(word)}%`;
-    const orSql = SEARCH_FIELDS.map((f) => `${f} LIKE ?`).join(" OR ");
+    const orSql = fields.map((f) => `${f} LIKE ?`).join(" OR ");
     parts.push(`(${orSql})`);
-    for (let i = 0; i < SEARCH_FIELDS.length; i++) {
+    for (let i = 0; i < fields.length; i++) {
       params.push(like);
     }
   }
   return { sql: ` AND (${parts.join(" AND ")})`, params };
+}
+
+function buildSearch(q) {
+  return buildSearchOnFields(q, SEARCH_FIELDS);
+}
+
+/**
+ * Jewel loan picker quick syntax: #123 → id; @ravi → name only; else → all search fields.
+ */
+function parsePickerQuickQuery(qRaw) {
+  const raw = String(qRaw || "").trim();
+  if (!raw) return { kind: "none" };
+  if (raw.startsWith("#")) {
+    const rest = raw.slice(1).trim();
+    if (/^\d+$/.test(rest)) return { kind: "id", id: Number(rest) };
+    return { kind: "id", id: null };
+  }
+  if (raw.startsWith("@")) {
+    return { kind: "name", term: raw.slice(1).trim() };
+  }
+  return { kind: "all", q: raw };
 }
 
 /** Field-specific filters from query string (detail search). */
@@ -174,6 +196,7 @@ async function moveProofsToCustomerDir(customerId, files) {
     ["addressProof", "address_proof_file"],
     ["panProof", "pan_proof_file"],
     ["aadharProof", "aadhar_proof_file"],
+    ["customerPhoto", "photo_file"],
   ];
   for (const [field, col] of mapping) {
     const arr = files[field];
@@ -205,6 +228,7 @@ function mapRow(r) {
     hasAddressProof: !!r.address_proof_file,
     hasPanProof: !!r.pan_proof_file,
     hasAadharProof: !!r.aadhar_proof_file,
+    hasCustomerPhoto: !!r.photo_file,
     placeId: num(r.place_id),
     placeName: r.place_name ?? null,
     placeInitial: r.place_initial ?? null,
@@ -264,8 +288,83 @@ customersRouter.get("/", authRequired, async (req, res, next) => {
     const { sql: detailSql, params: detailParams } = buildDetailFilters(
       req.query
     );
-    const sql = `${listSql}${searchSql}${detailSql} ORDER BY c.name ASC, c.id ASC LIMIT 500`;
-    const rows = await pool.query(sql, [...searchParams, ...detailParams]);
+    const whereSuffix = `${searchSql}${detailSql}`;
+    const listParams = [...searchParams, ...detailParams];
+    const pageSize = await getCustomerListPageSize();
+    const countSql = `
+      SELECT COUNT(*) AS c
+      FROM customers c
+      JOIN places p ON p.id = c.place_id
+      LEFT JOIN customers ref ON ref.id = c.referred_by_customer_id
+      WHERE 1=1${whereSuffix}
+    `;
+    const countRows = await pool.query(countSql, listParams);
+    const total = Number(countRows[0]?.c ?? 0);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    let page = Number(req.query.page);
+    if (!Number.isFinite(page) || page < 1) page = 1;
+    if (page > totalPages) page = totalPages;
+    const offset = (page - 1) * pageSize;
+    const sql = `${listSql}${whereSuffix} ORDER BY c.name ASC, c.id ASC LIMIT ? OFFSET ?`;
+    const rows = await pool.query(sql, [...listParams, pageSize, offset]);
+    res.json({
+      items: rows.map(mapRow),
+      total,
+      page,
+      pageSize,
+      totalPages,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/** Picker for jewel loan: #id, @name-only, or general q + optional detail filters. */
+customersRouter.get("/picker", authRequired, async (req, res, next) => {
+  try {
+    const qRaw = String(req.query.q || "").trim();
+    const { sql: detailSql, params: detailParams } = buildDetailFilters(req.query);
+    const hasDetail = detailSql.length > 0;
+    const quick = parsePickerQuickQuery(qRaw);
+
+    if (quick.kind === "none" && !hasDetail) {
+      return res.json([]);
+    }
+
+    let extra = "";
+    const params = [];
+    const orderSql = ` ORDER BY c.name ASC, c.id ASC LIMIT 80`;
+
+    if (quick.kind === "id") {
+      if (quick.id == null || !Number.isFinite(quick.id) || quick.id <= 0) {
+        return res.json([]);
+      }
+      extra += ` AND c.id = ?`;
+      params.push(quick.id);
+    } else if (quick.kind === "name") {
+      if (quick.term) {
+        const { sql: searchSql, params: searchParams } = buildSearchOnFields(quick.term, [
+          "c.name",
+        ]);
+        extra += searchSql;
+        params.push(...searchParams);
+      } else if (!hasDetail) {
+        return res.json([]);
+      }
+    } else {
+      const { sql: searchSql, params: searchParams } = buildSearch(quick.q);
+      if (!searchSql && !hasDetail) {
+        return res.json([]);
+      }
+      extra += searchSql;
+      params.push(...searchParams);
+    }
+
+    extra += detailSql;
+    params.push(...detailParams);
+
+    const sql = `${listSql}${extra}${orderSql}`;
+    const rows = await pool.query(sql, params);
     res.json(rows.map(mapRow));
   } catch (e) {
     next(e);
@@ -280,6 +379,7 @@ customersRouter.get("/:id(\\d+)/file/:kind", authRequired, async (req, res, next
       addressProof: "address_proof_file",
       panProof: "pan_proof_file",
       aadharProof: "aadhar_proof_file",
+      customerPhoto: "photo_file",
     };
     const col = colMap[kind];
     if (!col) {
@@ -423,7 +523,7 @@ customersRouter.put(
       }
 
       const existing = await pool.query(
-        `SELECT address_proof_file, pan_proof_file, aadhar_proof_file FROM customers WHERE id = ?`,
+        `SELECT address_proof_file, pan_proof_file, aadhar_proof_file, photo_file FROM customers WHERE id = ?`,
         [id]
       );
       if (!existing.length) {
@@ -442,6 +542,9 @@ customersRouter.put(
       }
       if (proofUpdates.aadhar_proof_file) {
         await unlinkProof(prev.aadhar_proof_file);
+      }
+      if (proofUpdates.photo_file) {
+        await unlinkProof(prev.photo_file);
       }
 
       await pool.query(

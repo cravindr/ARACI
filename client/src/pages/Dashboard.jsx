@@ -11,7 +11,8 @@ export default function Dashboard() {
         Signed in as <strong>{user?.username}</strong> ({user?.role}).
       </p>
       <p style={{ marginBottom: isAdmin ? "0.75rem" : 0 }}>
-        <Link to="/board-rate">Gold board rate</Link>, <Link to="/customers">customers</Link>.
+        <Link to="/board-rate">Gold board rate</Link>, <Link to="/customers">customers</Link>,{" "}
+        <Link to="/jewel-loan">jewel pledge loan</Link>.
       </p>
       {isAdmin ? (
         <p style={{ marginBottom: 0 }}>

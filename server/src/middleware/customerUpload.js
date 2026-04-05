@@ -25,8 +25,22 @@ const tmpStorage = multer.diskStorage({
   },
 });
 
+const PHOTO_EXT = new Set([".jpg", ".jpeg", ".png", ".bmp"]);
+
 function fileFilter(_req, file, cb) {
   const ext = path.extname(file.originalname || "").toLowerCase();
+  if (file.fieldname === "customerPhoto") {
+    if (!PHOTO_EXT.has(ext)) {
+      cb(
+        new Error(
+          `Customer photo must be an image (.jpg, .jpeg, .png, .bmp), got "${ext}"`
+        )
+      );
+      return;
+    }
+    cb(null, true);
+    return;
+  }
   if (!ALLOWED_EXT.has(ext)) {
     cb(
       new Error(
@@ -46,4 +60,5 @@ export const uploadCustomerFiles = multer({
   { name: "addressProof", maxCount: 1 },
   { name: "panProof", maxCount: 1 },
   { name: "aadharProof", maxCount: 1 },
+  { name: "customerPhoto", maxCount: 1 },
 ]);

@@ -7,6 +7,8 @@ import JewelTypes from "./pages/JewelTypes.jsx";
 import Places from "./pages/Places.jsx";
 import BoardRate from "./pages/BoardRate.jsx";
 import Customers from "./pages/Customers.jsx";
+import Configuration from "./pages/Configuration.jsx";
+import PledgeJewelLoan from "./pages/PledgeJewelLoan.jsx";
 import Layout from "./components/Layout.jsx";
 
 function PrivateRoute({ children }) {
@@ -50,6 +52,7 @@ export default function App() {
         <Route index element={<Dashboard />} />
         <Route path="board-rate" element={<BoardRate />} />
         <Route path="customers" element={<Customers />} />
+        <Route path="jewel-loan" element={<PledgeJewelLoan />} />
         <Route
           path="users"
           element={
@@ -71,6 +74,14 @@ export default function App() {
           element={
             <AdminRoute>
               <Places />
+            </AdminRoute>
+          }
+        />
+        <Route
+          path="configuration"
+          element={
+            <AdminRoute>
+              <Configuration />
             </AdminRoute>
           }
         />
